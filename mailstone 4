@@ -1,0 +1,143 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import pyautogui
+import time
+from math import hypot
+from tkinter import *
+from PIL import Image, ImageTk
+
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(min_detection_confidence=0.7,
+                       min_tracking_confidence=0.5,
+                       max_num_hands=1)
+mp_draw = mp.solutions.drawing_utils
+
+root = Tk()
+root.title("Hand Gesture Recognition")
+root.geometry("900x700")
+
+Label(root, text="Hand Gesture Recognition", font=("Arial", 24)).pack(pady=10)
+status_label = Label(root, text="Gesture Control: Disabled", font=("Arial", 12), fg="gray")
+status_label.pack(pady=5)
+video_label = Label(root)
+video_label.pack()
+
+cap = None
+running = False
+gesture_enabled = False
+last_action = None
+last_action_time = 0
+action_cooldown = 0.25
+prev_time = time.time()
+
+def start_camera():
+    global cap, running
+    cap = cv2.VideoCapture(0)
+    running = True
+    show_frame()
+
+def stop_camera():
+    global cap, running
+    running = False
+    if cap is not None:
+        cap.release()
+    video_label.config(image="")
+
+def toggle_gesture():
+    global gesture_enabled
+    gesture_enabled = not gesture_enabled
+    if gesture_enabled:
+        gesture_btn.config(text="Disable Gesture Control")
+        status_label.config(text="Gesture Control: Enabled", fg="green")
+    else:
+        gesture_btn.config(text="Enable Gesture Control")
+        status_label.config(text="Gesture Control: Disabled", fg="gray")
+
+def end_app():
+    global cap, running
+    running = False
+    if cap is not None:
+        cap.release()
+    root.destroy()
+
+def show_frame():
+    global cap, running, gesture_enabled, last_action, last_action_time, prev_time
+    if running and cap is not None and cap.isOpened():
+        ret, frame = cap.read()
+        if ret:
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = hands.process(img_rgb)
+
+            if results.multi_hand_landmarks:
+                for hand_landmark in results.multi_hand_landmarks:
+                    lm_list = []
+                    h, w, _ = frame.shape
+                    for id, lm in enumerate(hand_landmark.landmark):
+                        cx, cy = int(lm.x * w), int(lm.y * h)
+                        lm_list.append([id, cx, cy])
+
+                    if lm_list:
+                        x1, y1 = lm_list[4][1], lm_list[4][2]
+                        x2, y2 = lm_list[8][1], lm_list[8][2]
+                        cv2.circle(frame, (x1, y1), 10, (255, 0, 255), cv2.FILLED)
+                        cv2.circle(frame, (x2, y2), 10, (255, 0, 255), cv2.FILLED)
+                        cv2.line(frame, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+                        length = hypot(x2 - x1, y2 - y1)
+                        vol_per = np.interp(length, [20, 200], [0, 100])
+                        vol_per = float(np.clip(vol_per, 0, 100))
+
+                        if length < 30:
+                            gesture_type, gesture_quality, action = "Mute", "Strong", "mute"
+                        elif length > 150:
+                            gesture_type, gesture_quality, action = "Volume Up", "Strong", "up"
+                        else:
+                            gesture_type, gesture_quality, action = "Volume Down", "Moderate", "down"
+
+                        now = time.time()
+                        if gesture_enabled and (action != last_action or (now - last_action_time) > action_cooldown):
+                            if action == "mute":
+                                pyautogui.press("volumemute")
+                            elif action == "up":
+                                pyautogui.press("volumeup")
+                            else:
+                                pyautogui.press("volumedown")
+                            last_action, last_action_time = action, now
+
+                        bar_x, bar_y, bar_width, bar_height = 50, 100, 30, 300
+                        filled = int((vol_per / 100) * bar_height)
+                        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (255, 0, 0), 3)
+                        cv2.rectangle(frame, (bar_x, bar_y + bar_height - filled),
+                                      (bar_x + bar_width, bar_y + bar_height), (0, 255, 0), -1)
+
+                        cv2.putText(frame, f"Gesture: {gesture_type}", (10, 40),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                        cv2.putText(frame, f"Volume: {int(vol_per)}%", (10, 80),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                        cv2.putText(frame, f"Quality: {gesture_quality}", (10, 120),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+                    mp_draw.draw_landmarks(frame, hand_landmark, mp_hands.HAND_CONNECTIONS)
+
+            curr_time = time.time()
+            fps = 1.0 / max(curr_time - prev_time, 1e-6)
+            prev_time = curr_time
+            cv2.putText(frame, f"FPS: {int(fps)}", (10, 160),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame)
+            imgtk = ImageTk.PhotoImage(image=img)
+            video_label.imgtk = imgtk
+            video_label.configure(image=imgtk)
+
+        video_label.after(10, show_frame)
+
+Button(root, text="Start Camera", command=start_camera, width=20).pack(pady=5)
+Button(root, text="Stop Camera", command=stop_camera, width=20).pack(pady=5)
+gesture_btn = Button(root, text="Enable Gesture Control", command=toggle_gesture, width=20)
+gesture_btn.pack(pady=5)
+Button(root, text="End", command=end_app, width=20, fg="red").pack(pady=5)
+
+root.mainloop()
